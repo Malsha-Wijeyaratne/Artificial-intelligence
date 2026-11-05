@@ -1,0 +1,80 @@
+import os
+import glob
+import pandas as pd
+import numpy as np
+import re
+
+def run_question_1():
+    print("=== QUESTION 1: DATA PREPARATION & LEAKAGE CHECKS ===")
+    
+    # 1. DEFINE PATH TO YOUR FOLDER
+    folder_path = 'Export-Country-Wise' 
+    
+    if not os.path.exists(folder_path):
+        print(f"Error: Folder '{folder_path}' not found. Please verify the folder name in your workspace.")
+        return
+
+    # Find all CSV files in the folder
+    csv_files = glob.glob(os.path.join(folder_path, "*.csv"))
+    
+    if not csv_files:
+        print(f"No CSV files found inside '{folder_path}'! Please check if they have a .csv extension.")
+        return
+
+    print(f"Found {len(csv_files)} CSV files. Combining them into a joint panel...")
+
+    # 2. LOOP THROUGH AND COMBINE ALL CSV FILES
+    all_data = []
+    for file in csv_files:
+        try:
+            filename = os.path.basename(file)
+            # Try to extract a 4-digit year from the filename (e.g., '1987.csv' or 'export_2015.csv')
+            year_match = re.search(r'(19\d{2}|20\d{2})', filename)
+            
+            # Read the CSV file
+            df_temp = pd.read_csv(file)
+            
+            # If year isn't a column inside the file, extract it from the filename
+            if year_match and 'Year' not in df_temp.columns and 'year' not in df_temp.columns:
+                df_temp['Year'] = int(year_match.group(1))
+                
+            all_data.append(df_temp)
+        except Exception as e:
+            print(f"Could not read {file}: {e}")
+
+    if not all_data:
+        print("Error: Could not successfully read any data from the CSV files.")
+        return
+
+    df = pd.concat(all_data, ignore_index=True)
+    print(f"Successfully combined! Master dataset shape: {df.shape}")
+    print("Columns available in dataset:", df.columns.tolist())
+
+    # 3. BASIC CLEANING & STANDARDIZATION
+    df.columns = df.columns.str.strip()
+
+    print("\nMissing values per column:")
+    print(df.isnull().sum())
+
+    # 4. CHRONOLOGICAL SPLIT (LEAKAGE DEFENSE)
+    # Strict chronological split: 1987–2015 Train, 2016–2019 Validation, 2020–2024 Test
+    year_col = 'Year' if 'Year' in df.columns else ('year' if 'year' in df.columns else None)
+    
+    if year_col:
+        train_df = df[(df[year_col] >= 1987) & (df[year_col] <= 2015)]
+        val_df = df[(df[year_col] >= 2016) & (df[year_col] <= 2019)]
+        test_df = df[(df[year_col] >= 2020) & (df[year_col] <= 2024)]
+        
+        print(f"\nData Splits Created Successfully:")
+        print(f" - Train Set (1987-2015): {train_df.shape[0]} rows")
+        print(f" - Validation Set (2016-2019): {val_df.shape[0]} rows")
+        print(f" - Test Set (2020-2024): {test_df.shape[0]} rows")
+    else:
+        print("Warning: 'Year' column not found in columns or filename. Please verify column headers.")
+
+    # Save processed master file for subsequent question scripts
+    df.to_csv('processed_master_trade_data.csv', index=False)
+    print("\nSaved master dataset to 'processed_master_trade_data.csv' for downstream model scripts.")
+
+if __name__ == "__main__":
+    run_question_1()

@@ -1,0 +1,157 @@
+"""
+Questions 2 & 3: Neural Network Design, Baseline Comparison & Optimization Study
+"""
+
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+import time
+
+# Set seeds
+np.random.seed(42)
+torch.manual_seed(42)
+
+class TradeDataset(Dataset):
+    def __init__(self, cat_data, num_data, targets):
+        self.cat_data = torch.tensor(cat_data, dtype=torch.long)
+        self.num_data = torch.tensor(num_data, dtype=torch.float32)
+        self.targets = torch.tensor(targets, dtype=torch.float32).unsqueeze(1)
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, idx):
+        return self.cat_data[idx], self.num_data[idx], self.targets[idx]
+
+class EntityEmbeddingNN(nn.Module):
+    def __init__(self, num_countries, embed_dim=16, num_dense=5):
+        super().__init__()
+        self.embed = nn.Embedding(num_embeddings=num_countries, embedding_dim=embed_dim)
+        input_dim = embed_dim + num_dense
+        
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, cat_x, num_x):
+        emb = self.embed(cat_x).squeeze(1)
+        x = torch.cat([emb, num_x], dim=1)
+        return self.network(x)
+
+def run_question_2_3():
+    print("=== QUESTION 2 & 3: MODEL BUILDING & OPTIMIZATION STUDY ===")
+    
+    try:
+        df = pd.read_csv('processed_master_trade_data.csv')
+    except FileNotFoundError:
+        print("Error: 'processed_master_trade_data.csv' not found. Please run Question 1 first.")
+        return
+
+    df.columns = df.columns.str.strip().str.lower()
+    print("Available columns:", df.columns.tolist())
+
+    # Auto-detect column names dynamically
+    country_col = next((c for c in df.columns if 'country' in c or 'destination' in c), df.columns[0])
+    year_col = next((c for c in df.columns if 'year' in c), 'year')
+    qty_col = next((c for c in df.columns if 'qty' in c or 'quantity' in c), df.columns[2])
+
+    # Ensure target column exists
+    if 'target_next_qty' not in df.columns:
+        df = df.sort_values(by=[country_col, year_col]).reset_index(drop=True)
+        df['target_next_qty'] = df.groupby(country_col)[qty_col].shift(-1)
+        df = df.dropna(subset=['target_next_qty']).reset_index(drop=True)
+    
+    target_col = 'target_next_qty'
+
+    # Encode country names into integer IDs
+    le = LabelEncoder()
+    df['country_id'] = le.fit_transform(df[country_col].astype(str))
+    num_countries = df['country_id'].nunique()
+
+    # Chronological Split
+    train_df = df[(df[year_col] >= 1987) & (df[year_col] <= 2015)]
+    val_df = df[(df[year_col] >= 2016) & (df[year_col] <= 2019)]
+    test_df = df[(df[year_col] >= 2020) & (df[year_col] <= 2024)]
+
+    # Select numerical features (excluding metadata/targets)
+    exclude_cols = {year_col, country_col, 'country_id', target_col}
+    num_cols = [c for c in df.columns if c not in exclude_cols and pd.api.types.is_numeric_dtype(df[c])]
+
+    scaler = StandardScaler()
+    X_train_num = scaler.fit_transform(train_df[num_cols].fillna(0))
+    X_val_num = scaler.transform(val_df[num_cols].fillna(0))
+    X_test_num = scaler.transform(test_df[num_cols].fillna(0))
+
+    # 1. Classical Baseline (Random Forest using encoded country_id)
+    X_train_rf = np.hstack([train_df[['country_id']].values, X_train_num])
+    X_val_rf = np.hstack([val_df[['country_id']].values, X_val_num])
+    X_test_rf = np.hstack([test_df[['country_id']].values, X_test_num])
+
+    print("\nTraining Classical Baseline (Random Forest)...")
+    start_time = time.time()
+    rf = RandomForestRegressor(n_estimators=100, max_depth=12, random_state=42, n_jobs=-1)
+    rf.fit(X_train_rf, train_df[target_col].values)
+    rf_train_time = time.time() - start_time
+
+    rf_preds = rf.predict(X_test_rf)
+    rf_rmse = np.sqrt(mean_squared_error(test_df[target_col].values, rf_preds))
+    print(f"Random Forest Baseline - Test RMSE: {rf_rmse:.2f} (Trained in {rf_train_time:.2f}s)")
+
+    # 2. PyTorch Neural Network
+    train_ds = TradeDataset(train_df[['country_id']].values, X_train_num, train_df[target_col].values)
+    val_ds = TradeDataset(val_df[['country_id']].values, X_val_num, val_df[target_col].values)
+    test_ds = TradeDataset(test_df[['country_id']].values, X_test_num, test_df[target_col].values)
+
+    train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
+
+    model = EntityEmbeddingNN(num_countries=num_countries, embed_dim=16, num_dense=len(num_cols))
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    print("\nTraining PyTorch Entity Embedding Neural Network...")
+    start_time = time.time()
+    epochs = 15
+    for epoch in range(epochs):
+        model.train()
+        for cat_x, num_x, targets in train_loader:
+            optimizer.zero_grad()
+            out = model(cat_x, num_x)
+            loss = criterion(out, targets)
+            loss.backward()
+            optimizer.step()
+    nn_train_time = time.time() - start_time
+
+    # Test Evaluation
+    model.eval()
+    nn_preds, actuals = [], []
+    with torch.no_grad():
+        for cat_x, num_x, targets in test_loader:
+            out = model(cat_x, num_x)
+            nn_preds.extend(out.squeeze().tolist())
+            actuals.extend(targets.squeeze().tolist())
+
+    nn_rmse = np.sqrt(mean_squared_error(actuals, nn_preds))
+    nn_mape = mean_absolute_percentage_error(actuals, nn_preds)
+    print(f"Entity-Embedding Neural Net - Test RMSE: {nn_rmse:.2f} | MAPE: {nn_mape:.4f} (Trained in {nn_train_time:.2f}s)")
+
+    # Save weights for deployment
+    torch.save(model.state_dict(), "entity_embedding_nn.pth")
+    print("\nSaved neural network weights as 'entity_embedding_nn.pth'. Ready for deployment & XAI!")
+
+if __name__ == "__main__":
+    run_question_2_3()
