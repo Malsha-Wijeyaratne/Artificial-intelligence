@@ -102,5 +102,3 @@ sns.heatmap(df[numeric_cols].corr(), annot=True, cmap='Blues', fmt='.2f')
 plt.title('Feature Correlation Heatmap')
 plt.savefig('eda_correlation.png', bbox_inches='tight')
 plt.close()
-
-print("\nEDA plots generated and saved as 'eda_distribution.png' and 'eda_correlation.png' for your report screenshots!")
