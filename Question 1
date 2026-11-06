@@ -3,6 +3,8 @@ import glob
 import pandas as pd
 import numpy as np
 import re
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 def run_question_1():
     print("=== QUESTION 1: DATA PREPARATION & LEAKAGE CHECKS ===")
@@ -78,3 +80,27 @@ def run_question_1():
 
 if __name__ == "__main__":
     run_question_1()
+
+# Load the saved master dataset directly
+df = pd.read_csv('processed_master_trade_data.csv')
+
+print("--- SUMMARY STATISTICS ---")
+print(df[['Qty(MT)', 'Rs(Crore)', 'MT per Crore']].describe())
+
+# 1. Distribution Plot (Using actual column 'Qty(MT)')
+plt.figure(figsize=(8, 4))
+sns.histplot(df['Qty(MT)'], bins=50, kde=True, color='green')
+plt.title('Distribution of Export Volume (Qty MT)')
+plt.xlabel('Volume (MT)')
+plt.savefig('eda_distribution.png', bbox_inches='tight')
+plt.close()
+
+# 2. Correlation Heatmap (Using actual numeric columns)
+plt.figure(figsize=(6, 5))
+numeric_cols = ['Qty(MT)', 'Rs(Crore)', '% Share(Qty)', '% Share(Rs)', 'MT per Crore', 'Year']
+sns.heatmap(df[numeric_cols].corr(), annot=True, cmap='Blues', fmt='.2f')
+plt.title('Feature Correlation Heatmap')
+plt.savefig('eda_correlation.png', bbox_inches='tight')
+plt.close()
+
+print("\nEDA plots generated and saved as 'eda_distribution.png' and 'eda_correlation.png' for your report screenshots!")
