@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 import time
 
-# Set seeds
+# Set seeds for reproducibility
 np.random.seed(42)
 torch.manual_seed(42)
 
@@ -21,7 +21,7 @@ class TradeDataset(Dataset):
     def __init__(self, cat_data, num_data, targets):
         self.cat_data = torch.tensor(cat_data, dtype=torch.long)
         self.num_data = torch.tensor(num_data, dtype=torch.float32)
-        self.targets = torch.tensor(targets, dtype=torch.float32).unsqueeze(1)
+        self.targets = torch.tensor(targets, dtype=torch.float32)
 
     def __len__(self):
         return len(self.targets)
@@ -49,10 +49,10 @@ class EntityEmbeddingNN(nn.Module):
     def forward(self, cat_x, num_x):
         emb = self.embed(cat_x).squeeze(1)
         x = torch.cat([emb, num_x], dim=1)
-        return self.network(x)
+        return self.network(x).squeeze(1)
 
 def run_question_2_3():
-    print("=== QUESTION 2 & 3: MODEL BUILDING & OPTIMIZATION STUDY ===")
+    print("=== QUESTION 2 & 3: MODEL BUILDING & COMPARISON STUDY ===")
     
     try:
         df = pd.read_csv('processed_master_trade_data.csv')
@@ -61,14 +61,13 @@ def run_question_2_3():
         return
 
     df.columns = df.columns.str.strip().str.lower()
-    print("Available columns:", df.columns.tolist())
 
     # Auto-detect column names dynamically
     country_col = next((c for c in df.columns if 'country' in c or 'destination' in c), df.columns[0])
     year_col = next((c for c in df.columns if 'year' in c), 'year')
-    qty_col = next((c for c in df.columns if 'qty' in c or 'quantity' in c), df.columns[2])
+    qty_col = next((c for c in df.columns if 'qty' in c or 'quantity' in c), df.columns[1])
 
-    # Ensure target column exists
+    # Ensure target column (t+1 volume) exists
     if 'target_next_qty' not in df.columns:
         df = df.sort_values(by=[country_col, year_col]).reset_index(drop=True)
         df['target_next_qty'] = df.groupby(country_col)[qty_col].shift(-1)
@@ -81,12 +80,12 @@ def run_question_2_3():
     df['country_id'] = le.fit_transform(df[country_col].astype(str))
     num_countries = df['country_id'].nunique()
 
-    # Chronological Split
+    # Chronological Split (Leakage Defense)
     train_df = df[(df[year_col] >= 1987) & (df[year_col] <= 2015)]
     val_df = df[(df[year_col] >= 2016) & (df[year_col] <= 2019)]
-    test_df = df[(df[year_col] >= 2020) & (df[year_col] <= 2024)]
+    test_df = df[(df[year_col] >= 2020) & (df[year_col] <= 2023)]
 
-    # Select numerical features (excluding metadata/targets)
+    # Select numerical features
     exclude_cols = {year_col, country_col, 'country_id', target_col}
     num_cols = [c for c in df.columns if c not in exclude_cols and pd.api.types.is_numeric_dtype(df[c])]
 
@@ -95,37 +94,41 @@ def run_question_2_3():
     X_val_num = scaler.transform(val_df[num_cols].fillna(0))
     X_test_num = scaler.transform(test_df[num_cols].fillna(0))
 
-    # 1. Classical Baseline (Random Forest using encoded country_id)
+    # Raw Targets for direct learning and clean evaluation
+    y_train_raw = train_df[target_col].values
+    y_val_raw = val_df[target_col].values
+    y_test_raw = test_df[target_col].values
+
+    # 1. Classical Baseline (Random Forest)
     X_train_rf = np.hstack([train_df[['country_id']].values, X_train_num])
-    X_val_rf = np.hstack([val_df[['country_id']].values, X_val_num])
     X_test_rf = np.hstack([test_df[['country_id']].values, X_test_num])
 
     print("\nTraining Classical Baseline (Random Forest)...")
     start_time = time.time()
     rf = RandomForestRegressor(n_estimators=100, max_depth=12, random_state=42, n_jobs=-1)
-    rf.fit(X_train_rf, train_df[target_col].values)
+    rf.fit(X_train_rf, y_train_raw)
     rf_train_time = time.time() - start_time
 
     rf_preds = rf.predict(X_test_rf)
-    rf_rmse = np.sqrt(mean_squared_error(test_df[target_col].values, rf_preds))
-    print(f"Random Forest Baseline - Test RMSE: {rf_rmse:.2f} (Trained in {rf_train_time:.2f}s)")
+    rf_rmse = np.sqrt(mean_squared_error(y_test_raw, rf_preds))
+    rf_mape = mean_absolute_percentage_error(y_test_raw, rf_preds)
 
-    # 2. PyTorch Neural Network
-    train_ds = TradeDataset(train_df[['country_id']].values, X_train_num, train_df[target_col].values)
-    val_ds = TradeDataset(val_df[['country_id']].values, X_val_num, val_df[target_col].values)
-    test_ds = TradeDataset(test_df[['country_id']].values, X_test_num, test_df[target_col].values)
+    # 2. PyTorch Neural Network Setup (Direct Raw Targets with L1 Loss for robustness)
+    train_ds = TradeDataset(train_df[['country_id']].values, X_train_num, y_train_raw)
+    val_ds = TradeDataset(val_df[['country_id']].values, X_val_num, y_val_raw)
+    test_ds = TradeDataset(test_df[['country_id']].values, X_test_num, y_test_raw)
 
     train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
 
     model = EntityEmbeddingNN(num_countries=num_countries, embed_dim=16, num_dense=len(num_cols))
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.HuberLoss() # More stable than MSE for large trade volume scales
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-    print("\nTraining PyTorch Entity Embedding Neural Network...")
+    print("Training PyTorch Entity Embedding Neural Network...")
     start_time = time.time()
-    epochs = 15
+    epochs = 25
     for epoch in range(epochs):
         model.train()
         for cat_x, num_x, targets in train_loader:
@@ -142,16 +145,25 @@ def run_question_2_3():
     with torch.no_grad():
         for cat_x, num_x, targets in test_loader:
             out = model(cat_x, num_x)
-            nn_preds.extend(out.squeeze().tolist())
-            actuals.extend(targets.squeeze().tolist())
+            nn_preds.extend(out.tolist())
+            actuals.extend(targets.tolist())
 
     nn_rmse = np.sqrt(mean_squared_error(actuals, nn_preds))
     nn_mape = mean_absolute_percentage_error(actuals, nn_preds)
-    print(f"Entity-Embedding Neural Net - Test RMSE: {nn_rmse:.2f} | MAPE: {nn_mape:.4f} (Trained in {nn_train_time:.2f}s)")
 
-    # Save weights for deployment
+    # Save weights
     torch.save(model.state_dict(), "entity_embedding_nn.pth")
-    print("\nSaved neural network weights as 'entity_embedding_nn.pth'. Ready for deployment & XAI!")
+
+    # --- PRINT TERMINAL COMPARISON TABLE ---
+    print("\n" + "="*70)
+    print(f"{'MODEL PERFORMANCE COMPARISON TABLE':^70}")
+    print("="*70)
+    print(f"{'Model Architecture':<30} | {'Test RMSE (MT)':<15} | {'Test MAPE':<12} | {'Time (s)':<8}")
+    print("-" * 70)
+    print(f"{'Random Forest Baseline':<30} | {rf_rmse:<15.2f} | {rf_mape*100:<11.2f}% | {rf_train_time:<8.2f}")
+    print(f"{'Entity Embedding ANN':<30} | {nn_rmse:<15.2f} | {nn_mape*100:<11.2f}% | {nn_train_time:<8.2f}")
+    print("="*70)
+    print("\nSaved neural network weights as 'entity_embedding_nn.pth'.")
 
 if __name__ == "__main__":
     run_question_2_3()

@@ -1,7 +1,7 @@
 """
 Question 4: Streamlit Web Application
 Run using terminal command: 
-streamlit run Question 4.py
+streamlit run "Question 4.py"
 """
 
 import streamlit as st
@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
 
 class EntityEmbeddingNN(nn.Module):
     def __init__(self, num_countries=150, embed_dim=16, num_dense=5):
@@ -36,8 +37,32 @@ st.set_page_config(page_title="Indian Agriculture Export Forecaster", layout="ce
 st.title("🌾 Agricultural Export Demand Forecasting App")
 st.write("Decision Support System for Export Operations & Logistics Managers")
 
+# Load master dataset to extract valid country names dynamically
+@st.cache_data
+def load_country_mapping():
+    try:
+        df = pd.read_csv('processed_master_trade_data.csv')
+        df.columns = df.columns.str.strip().str.lower()
+        country_col = next((c for c in df.columns if 'country' in c or 'destination' in c), df.columns[0])
+        
+        le = LabelEncoder()
+        df['country_id'] = le.fit_transform(df[country_col].astype(str))
+        
+        # Create mapping dictionary {Country Name: Country ID}
+        mapping = dict(zip(df[country_col], df['country_id']))
+        return sorted(list(mapping.keys())), mapping
+    except Exception:
+        # Fallback if CSV is missing
+        return [f"Country_{i}" for i in range(150)], {f"Country_{i}": i for i in range(150)}
+
+country_names, country_mapping = load_country_mapping()
+
 st.sidebar.header("Input Parameters")
-country_id = st.sidebar.number_input("Destination Country ID (0-149)", min_value=0, max_value=149, value=15)
+
+# REPLACED NUMERIC SLIDER WITH USER-FRIENDLY COUNTRY SELECTBOX
+selected_country = st.sidebar.selectbox("Destination Country", country_names)
+country_id = int(country_mapping.get(selected_country, 0))
+
 qty = st.sidebar.number_input("Current Volume (MT)", min_value=0.0, value=1200.0)
 val = st.sidebar.number_input("Current Value (Rs Crore)", min_value=0.0, value=150.0)
 qty_lag1 = st.sidebar.number_input("Previous Year Volume (MT)", min_value=0.0, value=1100.0)
@@ -50,11 +75,14 @@ if st.sidebar.button("Predict Export Volume"):
         if qty < 0 or val < 0 or qty_lag1 < 0 or val_lag1 < 0:
             raise ValueError("Input quantities and values cannot be negative.")
         
-        model = EntityEmbeddingNN()
+        # Determine actual number of unique countries from mapping
+        num_countries = len(country_mapping) if country_mapping else 150
+        model = EntityEmbeddingNN(num_countries=num_countries)
+        
         try:
             model.load_state_dict(torch.load("entity_embedding_nn.pth"))
         except Exception:
-            pass
+            pass # Uses base initialization if weights file isn't found locally
         model.eval()
 
         cat_t = torch.tensor([[country_id]], dtype=torch.long)
@@ -63,7 +91,7 @@ if st.sidebar.button("Predict Export Volume"):
         with torch.no_grad():
             pred = model(cat_t, num_t).item()
 
-        st.success(f"**Forecasted Next Period Volume:** {max(0.0, pred):,.2f} Metric Tons")
+        st.success(f"**Forecasted Next Period Volume for {selected_country}:** {max(0.0, pred):,.2f} Metric Tons")
         st.info("Logistics Directive: Adjust warehouse buffer and pre-book shipping slots accordingly.")
 
     except Exception as e:
@@ -77,5 +105,3 @@ st.warning(
     - **Uncertainty Score:** Prediction confidence interval is estimated at ±11.5% based on held-out validation RMSE.
     """
 )
-
-#   & C:\Users\Malsha\AppData\Local\Programs\Python\Python312\python.exe -m streamlit run "c:/big-data-coursework/Artificial-intelligence/Question 4.py"
