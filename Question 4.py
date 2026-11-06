@@ -1,6 +1,7 @@
 """
 Question 4: Streamlit Web Application
-Run using terminal command: streamlit run q4_streamlit_app.py
+Run using terminal command: 
+streamlit run Question 4.py
 """
 
 import streamlit as st
@@ -37,36 +38,44 @@ st.write("Decision Support System for Export Operations & Logistics Managers")
 
 st.sidebar.header("Input Parameters")
 country_id = st.sidebar.number_input("Destination Country ID (0-149)", min_value=0, max_value=149, value=15)
-qty = st.sidebar.number_input("Current Volume (MT)", min_value=1.0, value=1200.0)
-val = st.sidebar.number_input("Current Value (Rs Crore)", min_value=0.1, value=150.0)
+qty = st.sidebar.number_input("Current Volume (MT)", min_value=0.0, value=1200.0)
+val = st.sidebar.number_input("Current Value (Rs Crore)", min_value=0.0, value=150.0)
 qty_lag1 = st.sidebar.number_input("Previous Year Volume (MT)", min_value=0.0, value=1100.0)
 val_lag1 = st.sidebar.number_input("Previous Year Value (Rs Crore)", min_value=0.0, value=140.0)
 
 val_per_unit = val / (qty + 1e-5)
 
 if st.sidebar.button("Predict Export Volume"):
-    model = EntityEmbeddingNN()
     try:
-        model.load_state_dict(torch.load("entity_embedding_nn.pth"))
-    except:
-        pass
-    model.eval()
+        if qty < 0 or val < 0 or qty_lag1 < 0 or val_lag1 < 0:
+            raise ValueError("Input quantities and values cannot be negative.")
+        
+        model = EntityEmbeddingNN()
+        try:
+            model.load_state_dict(torch.load("entity_embedding_nn.pth"))
+        except Exception:
+            pass
+        model.eval()
 
-    cat_t = torch.tensor([[country_id]], dtype=torch.long)
-    num_t = torch.tensor([[qty, val, val_per_unit, qty_lag1, val_lag1]], dtype=torch.float32)
+        cat_t = torch.tensor([[country_id]], dtype=torch.long)
+        num_t = torch.tensor([[qty, val, val_per_unit, qty_lag1, val_lag1]], dtype=torch.float32)
 
-    with torch.no_grad():
-        pred = model(cat_t, num_t).item()
+        with torch.no_grad():
+            pred = model(cat_t, num_t).item()
 
-    st.success(f"**Forecasted Next Period Volume:** {max(0.0, pred):,.2f} Metric Tons")
-    st.info("Logistics Directive: Adjust warehouse buffer and pre-book shipping slots accordingly.")
+        st.success(f"**Forecasted Next Period Volume:** {max(0.0, pred):,.2f} Metric Tons")
+        st.info("Logistics Directive: Adjust warehouse buffer and pre-book shipping slots accordingly.")
 
-# Limitations (Coursework Requirement)
+    except Exception as e:
+        st.error(f"⚠️ Error processing prediction: {e}")
+
 st.markdown("---")
 st.subheader("⚠️ Model Limitations & Disclaimers")
 st.warning(
     """
-    - **Macro Shocks:** Historical training bounds (1987-2023) do not capture unannounced tariffs or war embargoes.
-    - **Uncertainty Score:** Prediction confidence interval is estimated at ±11.5% based on validation RMSE.
+    - **Macro Shocks:** Historical training bounds (1987-2023) do not capture unannounced tariffs, geopolitical conflicts, or sudden export embargoes.
+    - **Uncertainty Score:** Prediction confidence interval is estimated at ±11.5% based on held-out validation RMSE.
     """
 )
+
+#   & C:\Users\Malsha\AppData\Local\Programs\Python\Python312\python.exe -m streamlit run "c:/big-data-coursework/Artificial-intelligence/Question 4.py"
